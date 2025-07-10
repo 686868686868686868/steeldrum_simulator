@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Drum Fall Simulation</title>
+    <!-- Tailwind CSS CDN을 로드하여 간편한 스타일링을 제공합니다. -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* 기본 바디 스타일: 여백 제거, 오버플로우 숨김, 폰트 설정, 배경색 및 글자색 설정 */
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Inter', sans-serif;
+            background-color: #1a202c; /* 어두운 배경색 */
+            color: white;
+        }
+        /* 캔버스 스타일: 블록 요소로 표시, 전체 너비와 높이 사용 */
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100vh; /* 뷰포트 높이의 100% 사용 */
+        }
+        /* 컨트롤 버튼 컨테이너 스타일 */
+        #controls {
+            position: absolute; /* 절대 위치 지정 */
+            top: 10px; /* 상단에서 10px 떨어진 위치 */
+            left: 50%; /* 왼쪽에서 50% 위치 */
+            transform: translateX(-50%); /* X축으로 -50% 이동하여 중앙 정렬 */
+            z-index: 10; /* 다른 요소 위에 표시 */
+            display: flex; /* 플렉스 박스 레이아웃 */
+            gap: 10px; /* 버튼 간 간격 */
+        }
+        /* 버튼 스타일 */
+        button {
+            padding: 10px 20px; /* 내부 여백 */
+            border-radius: 8px; /* 둥근 모서리 */
+            background-color: #4a90e2; /* 배경색 (파란색 계열) */
+            color: white; /* 글자색 */
+            font-weight: bold; /* 글자 굵게 */
+            border: none; /* 테두리 없음 */
+            cursor: pointer; /* 마우스 오버 시 포인터 변경 */
+            transition: background-color 0.3s ease, transform 0.2s ease; /* 부드러운 전환 효과 */
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); /* 그림자 효과 */
+        }
+        /* 버튼 호버 시 스타일 */
+        button:hover {
+            background-color: #357ABD; /* 배경색 변경 */
+            transform: translateY(-2px); /* 약간 위로 이동 */
+        }
+        /* 버튼 클릭 시 스타일 */
+        button:active {
+            transform: translateY(0); /* 원래 위치로 돌아옴 */
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1); /* 그림자 변경 */
+        }
+    </style>
+</head>
+<body>
+    <!-- 시뮬레이션 컨트롤 버튼 -->
+    <div id="controls">
+        <button id="startButton">시뮬레이션 시작</button>
+        <button id="resetButton">리셋</button>
+    </div>
+
+    <!-- Three.js 라이브러리 로드 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- Cannon.js 물리 엔진 라이브러리 로드 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cannon.js/0.6.2/cannon.min.js"></script>
+    <!-- Three.js OrbitControls (카메라 조작) 라이브러리 로드 -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+    <script>
+        // Three.js 관련 전역 변수 선언
+        let scene, camera, renderer, controls;
+        let drumMesh, seaMesh, cliffMesh, personGroup; // 3D 모델 (메쉬)
+        let bubbles = []; // 물방울 배열
+
+        // Cannon.js 관련 전역 변수 선언
+        let world; // 물리 월드
+        let drumBody, seaBody, cliffBody; // 물리 바디
+
+        // 시뮬레이션 상태를 제어하는 플래그
+        let isSimulationRunning = false;
+        let isPushing = false; // 사람이 드럼통을 미는 중인지 여부
+        let isSinking = false; // 드럼통이 가라앉는 중인지 여부
+        let bubbleSpawnTimer = 0; // 물방울 생성 타이머
+        const BUBBLE_SPAWN_INTERVAL = 0.1; // 물방울 생성 간격 (초)
+        const BUBBLE_LIFETIME = 3; // 물방울 수명 (초)
+        const BUBBLE_SPEED = 1.5; // 물방울 상승 속도
+
+        let lastTimestamp = 0; // 마지막 애니메이션 프레임 시간
+        let pushProgress = 0; // 푸싱 애니메이션 진행도 (0.0 ~ 1.0)
+        const pushDuration = 0.5; // 푸싱 애니메이션 지속 시간 (초)
+        let initialPersonZ; // 사람 그룹의 초기 Z 위치
+        let targetPersonZ; // 사람 그룹의 목표 Z 위치
+
+        /**
+         * 시뮬레이션 환경을 초기화하는 함수.
+         * Three.js 씬, 카메라, 렌더러, 물리 월드, 3D 객체 및 물리 바디를 설정합니다.
+         */
+        function init() {
+            // 1. Three.js 씬 설정
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB); // 하늘색 배경 설정
+
+            // 2. 카메라 설정
+            // PerspectiveCamera(fov, aspect, near, far)
+            // fov: 시야각, aspect: 종횡비, near: 렌더링 시작 거리, far: 렌더링 끝 거리
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 20, 50); // 카메라 초기 위치 설정 (절벽과 바다를 볼 수 있도록)
+
+            // 3. 렌더러 설정
+            renderer = new THREE.WebGLRenderer({ antialias: true }); // WebGL 렌더러 생성, 안티앨리어싱 활성화
+            renderer.setSize(window.innerWidth, window.innerHeight); // 렌더러 크기를 윈도우 크기에 맞춤
+            renderer.setPixelRatio(window.devicePixelRatio); // 픽셀 비율 설정 (고해상도 디스플레이 지원)
+            document.body.appendChild(renderer.domElement); // 렌더러의 DOM 요소를 HTML 바디에 추가
+
+            // 4. OrbitControls 설정 (카메라 조작)
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true; // 감쇠 효과 활성화 (부드러운 카메라 이동)
+            controls.dampingFactor = 0.25; // 감쇠 계수
+            controls.screenSpacePanning = false; // 스크린 공간 패닝 비활성화
+            controls.maxPolarAngle = Math.PI / 2; // 카메라가 지면 아래로 내려가지 않도록 제한 (90도)
+
+            // 5. Cannon.js 물리 월드 설정
+            world = new CANNON.World();
+            world.gravity.set(0, -9.82, 0); // 중력 설정 (Y축 아래 방향으로 지구 중력 가속도)
+            world.broadphase = new CANNON.NaiveBroadphase(); // 충돌 감지 방식 설정 (간단한 방식)
+            world.solver.iterations = 10; // 물리 계산 반복 횟수 (정확도 향상)
+
+            // 6. 재질 정의 (Three.js 렌더링용)
+            // PhongMaterial은 빛에 반응하는 재질입니다.
+            const seaMaterial = new THREE.MeshPhongMaterial({ color: 0x0000FF, transparent: true, opacity: 0.8 }); // 파란색, 투명도 0.8
+            const cliffMaterial = new THREE.MeshPhongMaterial({ color: 0x8B4513 }); // 갈색
+            const drumMaterial = new THREE.MeshPhongMaterial({ color: 0x0000FF }); // 파란색 드럼통
+            const personBodyMaterial = new THREE.MeshPhongMaterial({ color: 0x00FF00 }); // 사람 몸통 메쉬 재질 (초록색)
+            const bubbleMaterial = new THREE.MeshBasicMaterial({ color: 0xFFFFFF, transparent: true, opacity: 0.6 }); // 물방울 재질 (흰색, 투명)
+
+            // 7. 바다 객체 생성 (Three.js 및 Cannon.js)
+            const seaGeometry = new THREE.PlaneGeometry(200, 200); // 200x200 크기의 평면 지오메트리
+            seaMesh = new THREE.Mesh(seaGeometry, seaMaterial);
+            seaMesh.rotation.x = -Math.PI / 2; // X축으로 -90도 회전하여 수평으로 만듦
+            seaMesh.position.y = -5; // 바다의 Y축 위치 (절벽 아래)
+            scene.add(seaMesh); // 씬에 바다 메쉬 추가
+
+            const seaShape = new CANNON.Plane(); // Cannon.js 평면 모양
+            seaBody = new CANNON.Body({ mass: 0, material: new CANNON.Material() }); // 질량 0: 움직이지 않는 물체
+            seaBody.addShape(seaShape);
+            seaBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), -Math.PI / 2); // X축으로 -90도 회전
+            seaBody.position.y = seaMesh.position.y; // Three.js 메쉬와 동일한 Y 위치
+            world.addBody(seaBody); // 물리 월드에 바다 바디 추가
+
+            // 8. 절벽 객체 생성 (Three.js 및 Cannon.js)
+            const cliffGeometry = new THREE.BoxGeometry(20, 30, 20); // 20x30x20 크기의 박스 지오메트리
+            cliffMesh = new THREE.Mesh(cliffGeometry, cliffMaterial);
+            cliffMesh.position.set(0, 10, -30); // 절벽 위치 설정 (바다 위, 카메라에서 멀리)
+            scene.add(cliffMesh); // 씬에 절벽 메쉬 추가
+
+            const cliffShape = new CANNON.Box(new CANNON.Vec3(10, 15, 10)); // Cannon.js 박스 모양 (Three.js 지오메트리 크기의 절반)
+            cliffBody = new CANNON.Body({ mass: 0, material: new CANNON.Material() });
+            cliffBody.addShape(cliffShape);
+            cliffBody.position.copy(cliffMesh.position); // Three.js 메쉬와 동일한 위치
+            world.addBody(cliffBody); // 물리 월드에 절벽 바디 추가
+
+            // 9. 드럼통 객체 생성 (Three.js 및 Cannon.js)
+            const drumRadiusTop = 2;
+            const drumRadiusBottom = 2;
+            const drumHeight = 4;
+            const drumRadialSegments = 32; // 원통의 원형 분할 수
+            const drumGeometry = new THREE.CylinderGeometry(drumRadiusTop, drumRadiusBottom, drumHeight, drumRadialSegments);
+            drumMesh = new THREE.Mesh(drumGeometry, drumMaterial);
+            scene.add(drumMesh); // 씬에 드럼통 메쉬 추가
+
+            const drumShape = new CANNON.Cylinder(drumRadiusTop, drumRadiusBottom, drumHeight, drumRadialSegments); // Cannon.js 원통 모양
+            drumBody = new CANNON.Body({ mass: 10, material: new CANNON.Material() }); // 드럼통 질량 설정 (무게감)
+            drumBody.addShape(drumShape);
+            world.addBody(drumBody); // 물리 월드에 드럼통 바디 추가
+
+            // 10. 사람 메쉬 생성 (Three.js) - 여러 개의 박스로 구성
+            personGroup = new THREE.Group(); // 사람을 구성하는 메쉬들을 담을 그룹
+
+            // 얼굴 텍스처 로드 (이제 항상 플레이스홀더 이미지를 사용)
+            const textureLoader = new THREE.TextureLoader();
+            // 직접 플레이스홀더 이미지를 사용
+            const faceTexture = textureLoader.load('https://placehold.co/128x128/00FF00/FFFFFF?text=Face');
+            faceTexture.wrapS = THREE.RepeatWrapping;
+            faceTexture.wrapT = THREE.RepeatWrapping;
+            faceTexture.repeat.set(1, 1);
+            const headMaterial = new THREE.MeshPhongMaterial({ map: faceTexture }); // 얼굴 텍스처를 매핑한 재질
+
+            const head = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.5, 1.5), headMaterial); // 얼굴 메쉬
+            head.position.y = 2.75; // 몸통 위에 머리 위치
+            personGroup.add(head);
+
+            const body = new THREE.Mesh(new THREE.BoxGeometry(2, 3, 1), personBodyMaterial); // 몸통 메쉬
+            body.position.y = 1; // 발이 0에 닿도록 설정
+            personGroup.add(body);
+
+            const armGeometry = new THREE.BoxGeometry(0.7, 2, 0.7);
+            const leftArm = new THREE.Mesh(armGeometry, personBodyMaterial); // 왼쪽 팔 메쉬
+            leftArm.position.set(-1.35, 1.5, 0); // 몸통 옆에 팔 위치
+            personGroup.add(leftArm);
+
+            const rightArm = new THREE.Mesh(armGeometry, personBodyMaterial); // 오른쪽 팔 메쉬
+            rightArm.position.set(1.35, 1.5, 0); // 몸통 옆에 팔 위치
+            personGroup.add(rightArm);
+
+            const legGeometry = new THREE.BoxGeometry(0.8, 2, 0.8);
+            const leftLeg = new THREE.Mesh(legGeometry, personBodyMaterial); // 왼쪽 다리 메쉬
+            leftLeg.position.set(-0.6, -1, 0); // 몸통 아래 다리 위치
+            personGroup.add(leftLeg);
+
+            const rightLeg = new THREE.Mesh(legGeometry, personBodyMaterial); // 오른쪽 다리 메쉬
+            rightLeg.position.set(0.6, -1, 0); // 몸통 아래 다리 위치
+            personGroup.add(rightLeg);
+
+            scene.add(personGroup); // 씬에 사람 그룹 추가
+
+            // 11. 빛 추가
+            const ambientLight = new THREE.AmbientLight(0x404040); // 주변광 (모든 방향에서 균일하게 빛을 비춤)
+            scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8); // 방향광 (특정 방향에서 빛을 비춤)
+            directionalLight.position.set(50, 50, 50); // 빛의 위치
+            scene.add(directionalLight);
+
+            // 12. 드럼통 및 사람 초기 상태 설정
+            resetDrum();
+
+            // 13. 이벤트 리스너 등록
+            window.addEventListener('resize', onWindowResize, false); // 윈도우 리사이즈 이벤트
+            document.getElementById('startButton').addEventListener('click', startPushingAnimation); // 시작 버튼 클릭 시 푸싱 애니메이션 시작
+            document.getElementById('resetButton').addEventListener('click', resetSimulation); // 리셋 버튼 클릭 이벤트
+        }
+
+        /**
+         * 드럼통의 위치와 물리 상태를 초기화하는 함수.
+         * 시뮬레이션 시작 전이나 리셋 시 호출됩니다.
+         */
+        function resetDrum() {
+            // 드럼통을 절벽 위로 설정
+            // 절벽의 중앙 상단에 드럼통의 하단이 오도록 위치 계산
+            drumBody.position.set(
+                cliffMesh.position.x,
+                cliffMesh.position.y + cliffMesh.geometry.parameters.height / 2 + drumMesh.geometry.parameters.height / 2 + 1, // 절벽 높이 + 드럼통 높이 절반 + 약간의 여유
+                cliffMesh.position.z
+            );
+            drumBody.velocity.set(0, 0, 0); // 초기 속도 0
+            drumBody.angularVelocity.set(0, 0, 0); // 초기 각속도 0
+            drumBody.quaternion.set(0, 0, 0, 1); // 초기 회전 (단위 쿼터니언, 회전 없음)
+            drumBody.linearDamping = 0.01; // 물 밖에서는 낮은 감쇠
+            drumBody.angularDamping = 0.01; // 물 밖에서는 낮은 감쇠
+
+            // 사람 그룹 초기 위치 설정 (드럼통 뒤)
+            // personGroup의 전체 높이를 고려하여 절벽 위에 발이 닿도록 조정
+            const personHeight = 5; // 사람 그룹의 대략적인 높이 (몸통 3 + 다리 2 = 5)
+            initialPersonZ = drumBody.position.z + drumMesh.geometry.parameters.depth / 2 + 2; // 드럼통 뒤에 위치
+            targetPersonZ = drumBody.position.z + drumMesh.geometry.parameters.depth / 2 + 0.5; // 드럼통 바로 앞
+
+            personGroup.position.set(
+                drumBody.position.x,
+                cliffMesh.position.y + cliffMesh.geometry.parameters.height / 2 + personHeight / 2, // 사람의 발이 절벽에 닿도록
+                initialPersonZ
+            );
+
+            // Three.js 메쉬와 Cannon.js 바디의 위치 및 회전 동기화
+            drumMesh.position.copy(drumBody.position);
+            drumMesh.quaternion.copy(drumBody.quaternion);
+
+            isSimulationRunning = false; // 시뮬레이션 중지 상태로 설정
+            isPushing = false; // 푸싱 상태 초기화
+            pushProgress = 0; // 푸싱 진행도 초기화
+            isSinking = false; // 가라앉는 상태 초기화
+            bubbleSpawnTimer = 0; // 물방울 타이머 초기화
+
+            // 모든 물방울 제거
+            bubbles.forEach(bubble => scene.remove(bubble.mesh)); // 씬에서 물방울 메쉬 제거
+            bubbles = []; // 물방울 배열 비우기
+        }
+
+        /**
+         * 푸싱 애니메이션을 시작하는 함수.
+         * 사람이 드럼통을 미는 동작을 시뮬레이션합니다.
+         */
+        function startPushingAnimation() {
+            if (!isSimulationRunning && !isPushing) { // 시뮬레이션이 실행 중이 아니고 푸싱 중이 아닐 때만 시작
+                isPushing = true;
+                pushProgress = 0; // 푸싱 진행도 초기화
+            }
+        }
+
+        /**
+         * 드럼통을 떨어뜨리는 시뮬레이션을 시작하는 함수.
+         * 드럼통에 초기 속도와 각속도를 부여합니다.
+         */
+        function startDrumFall() {
+            if (!isSimulationRunning) {
+                // 드럼통에 초기 속도 부여 (수평 방향으로 던져지는 효과)
+                drumBody.velocity.set(5, 0, 10); // X축으로 5, Z축으로 10의 속도 (포물선 운동 유도)
+                // 드럼통에 초기 각속도 부여 (위아래로 뒤집히는 회전 운동)
+                drumBody.angularVelocity.set(10, 0, 0); // X축을 중심으로 초당 10라디안 회전
+                isSimulationRunning = true; // 시뮬레이션 실행 중으로 설정
+            }
+        }
+
+        /**
+         * 시뮬레이션을 리셋하는 함수.
+         * 드럼통을 초기 위치로 되돌리고 시뮬레이션을 중지합니다.
+         */
+        function resetSimulation() {
+            resetDrum(); // 드럼통 초기화 함수 호출
+        }
+
+        /**
+         * 윈도우 크기가 변경될 때 렌더러와 카메라의 종횡비를 업데이트하는 함수.
+         */
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight; // 카메라 종횡비 업데이트
+            camera.updateProjectionMatrix(); // 카메라 투영 행렬 업데이트
+            renderer.setSize(window.innerWidth, window.innerHeight); // 렌더러 크기 업데이트
+        }
+
+        /**
+         * 물방울을 생성하는 함수.
+         * 드럼통의 위치 근처에서 물방울을 생성하고 씬에 추가합니다.
+         */
+        function createBubble() {
+            const bubbleGeometry = new THREE.SphereGeometry(0.1 + Math.random() * 0.1, 8, 8); // 작은 구 형태, 크기 랜덤
+            const bubbleMaterial = new THREE.MeshBasicMaterial({ color: 0xFFFFFF, transparent: true, opacity: 0.6 }); // 흰색, 투명
+            const bubbleMesh = new THREE.Mesh(bubbleGeometry, bubbleMaterial);
+
+            // 드럼통 주변에서 물방울 생성 (랜덤 오프셋)
+            bubbleMesh.position.set(
+                drumMesh.position.x + (Math.random() - 0.5) * 1, // X축 랜덤 오프셋
+                drumMesh.position.y + (Math.random() - 0.5) * 1, // Y축 랜덤 오프셋
+                drumMesh.position.z + (Math.random() - 0.5) * 1  // Z축 랜덤 오프셋
+            );
+            scene.add(bubbleMesh); // 씬에 물방울 메쉬 추가
+            bubbles.push({ mesh: bubbleMesh, startTime: Date.now() }); // 생성 시간 기록
+        }
+
+        /**
+         * 애니메이션 루프 함수.
+         * 매 프레임마다 물리 월드를 업데이트하고 Three.js 객체를 렌더링합니다.
+         */
+        function animate(timestamp) {
+            requestAnimationFrame(animate); // 다음 프레임 요청 (브라우저 최적화)
+
+            // 첫 프레임에서는 deltaTime이 0이 되지 않도록 처리
+            if (lastTimestamp === 0) {
+                lastTimestamp = timestamp;
+            }
+            const deltaTime = (timestamp - lastTimestamp) / 1000; // 초 단위 deltaTime 계산
+            lastTimestamp = timestamp;
+
+            // 푸싱 애니메이션 처리
+            if (isPushing) {
+                pushProgress += deltaTime / pushDuration; // 진행도 업데이트
+                if (pushProgress < 1) {
+                    // 선형 보간으로 사람 그룹 이동
+                    personGroup.position.z = initialPersonZ - (initialPersonZ - targetPersonZ) * pushProgress;
+                } else {
+                    personGroup.position.z = targetPersonZ; // 최종 위치 설정
+                    startDrumFall(); // 푸싱 완료 후 드럼통 떨어뜨리기 시작
+                    isPushing = false; // 푸싱 상태 종료
+                    // 사람 그룹을 다시 뒤로 이동시키거나 숨김
+                    setTimeout(() => {
+                        personGroup.position.set(
+                            drumBody.position.x,
+                            cliffMesh.position.y + cliffMesh.geometry.parameters.height / 2 + personGroup.children[1].geometry.parameters.height / 2, // 사람의 발이 절벽에 닿도록
+                            cliffMesh.position.z + 10 // 절벽 뒤로 이동 (보이지 않게)
+                        );
+                    }, 500); // 0.5초 후 이동
+                }
+            }
+
+            // 물리 월드 업데이트
+            if (isSimulationRunning) {
+                world.step(1 / 60, deltaTime, 3); // 1/60초 간격으로 물리 업데이트, deltaTime 사용
+            }
+
+            // Cannon.js 바디의 위치와 회전을 Three.js 메쉬에 동기화
+            drumMesh.position.copy(drumBody.position);
+            drumMesh.quaternion.copy(drumBody.quaternion);
+
+            // 드럼통이 바다에 떨어졌는지 확인 및 가라앉는 로직
+            // 드럼통의 Y 위치가 바다 표면(seaMesh.position.y)보다 낮아지면 가라앉는 상태로 전환
+            if (isSimulationRunning && !isSinking && drumBody.position.y < seaMesh.position.y) {
+                isSinking = true; // 가라앉는 상태로 설정
+                // 드럼통이 물에 들어갔을 때 속도 감쇠 (물 저항 시뮬레이션)
+                drumBody.linearDamping = 0.9; // 선형 감쇠 (움직임 속도 감소)
+                drumBody.angularDamping = 0.9; // 각 감쇠 (회전 속도 감소)
+            }
+
+            // 드럼통이 가라앉는 중이고, 완전히 가라앉았을 때 물방울 생성
+            if (isSinking) {
+                // 드럼통이 바다 표면 아래로 완전히 가라앉았다고 판단하는 깊이
+                const fullySubmergedY = seaMesh.position.y - drumMesh.geometry.parameters.height; // 드럼통 전체가 물에 잠기는 깊이
+                if (drumBody.position.y < fullySubmergedY) {
+                    bubbleSpawnTimer += deltaTime; // 물방울 생성 타이머 업데이트
+                    if (bubbleSpawnTimer >= BUBBLE_SPAWN_INTERVAL) {
+                        createBubble(); // 물방울 생성
+                        bubbleSpawnTimer = 0; // 타이머 리셋
+                    }
+                }
+            }
+
+            // 물방울 업데이트 및 제거
+            const now = Date.now();
+            for (let i = bubbles.length - 1; i >= 0; i--) {
+                const bubble = bubbles[i];
+                // 물방울을 위로 이동
+                bubble.mesh.position.y += BUBBLE_SPEED * deltaTime;
+                // 물방울 투명도 감소 (사라지는 효과)
+                const lifeProgress = (now - bubble.startTime) / (BUBBLE_LIFETIME * 1000);
+                bubble.mesh.material.opacity = Math.max(0, 0.6 * (1 - lifeProgress)); // 0.6은 초기 투명도
+
+                // 물방울 수명 초과 또는 수면 위로 올라가면 제거
+                if (lifeProgress >= 1 || bubble.mesh.position.y > seaMesh.position.y + 2) { // 수면 + 약간 위로 올라가면 제거
+                    scene.remove(bubble.mesh); // 씬에서 메쉬 제거
+                    bubbles.splice(i, 1); // 배열에서 제거
+                }
+            }
+
+            controls.update(); // OrbitControls 업데이트 (카메라 조작 반영)
+            renderer.render(scene, camera); // 씬을 카메라 시점에서 렌더링
+        }
+
+        /**
+         * 윈도우 로드 완료 시 초기화 및 애니메이션 시작.
+         */
+        window.onload = function () {
+            init(); // 시뮬레이션 초기화
+            animate(0); // 애니메이션 루프 시작 (초기 timestamp 0으로 호출)
+        };
+    </script>
+</body>
+</html>
